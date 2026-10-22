@@ -75,10 +75,21 @@ service cloud.firestore {
     }
 
     // Invite codes: fetchable only by exact code (no listing).
+    // Doc shape: { ownerUid, tripId, createdAt }. Only the trip's owner can mint one;
+    // codes are never overwritten or re-pointed at another trip.
     match /invites/{code} {
       allow get: if true;
       allow list: if false;
-      allow create, update, delete: if request.auth != null;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['ownerUid','tripId','createdAt'])
+        && request.resource.data.ownerUid == me()
+        && request.resource.data.tripId is string
+        && get(/databases/$(database)/documents/trips/$(request.resource.data.tripId)).data.ownerUid == me();
+      // Owner may only touch metadata; ownerUid and tripId are locked forever.
+      allow update: if signedIn() && resource.data.ownerUid == me()
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerUid','tripId'])
+        && request.resource.data.keys().hasOnly(['ownerUid','tripId','createdAt']);
+      allow delete: if signedIn() && resource.data.ownerUid == me();
     }
   }
 }

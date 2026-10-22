@@ -17,9 +17,11 @@ function seed(){
     {id:'p3',code:'Palm Reader',name:'Indigo (Sample)',emoji:'🔮',tags:['witchy','markets','photography'],past:'Sample: Kyoto ’21 · Marrakech ’24',style:'Finds the hidden-gem spots'},
     {id:'p4',code:'Low Tide',name:'Rowan (Sample)',emoji:'🐾',tags:['chill','budget-smart','road trips'],past:'Sample: Lake Placid ’23',style:'Easygoing, naps are an activity'}
   ];
+  const trip={id:'t'+uid(),name:'Winter Sun Escape',type:'Couple',code:'SUN-'+Math.floor(1000+Math.random()*9000),memberIds:['p1','p2'],owner:'p1'};
   return {
     me:'p1',
-    trip:{name:'Winter Sun Escape',type:'Couple',code:'SUN-'+Math.floor(1000+Math.random()*9000),memberIds:['p1','p2'],owner:'p1'},
+    trip,
+    invites:{[trip.code]:inviteDoc(trip)},
     people,
     busy:{
       p1:[{id:uid(),start:addD(today,12),end:addD(today,15),label:'Work deadline'},{id:uid(),start:addD(today,28),end:addD(today,31),label:'Family thing'}],
@@ -54,7 +56,12 @@ function seed(){
     ]
   };
 }
-function load(){try{const r=JSON.parse(localStorage.getItem(KEY));if(r&&r.trip)return r}catch(e){} return seed()}
+// Invite doc — same shape as Firestore /invites/{code}: who minted it and which trip it opens.
+function inviteDoc(trip){return {ownerUid:trip.owner,tripId:trip.id,createdAt:Date.now()}}
+function load(){try{const r=JSON.parse(localStorage.getItem(KEY));if(r&&r.trip){
+  if(!r.trip.id)r.trip.id='t'+uid();
+  if(!r.invites)r.invites={[r.trip.code]:inviteDoc(r.trip)};
+  return r}}catch(e){} return seed()}
 let S=load();
 function save(){localStorage.setItem(KEY,JSON.stringify(S))}
 function person(id){return S.people.find(p=>p.id===id)||S.people[0]}
@@ -71,7 +78,11 @@ function thumbCls(v){return v===1?'up':v===-1?'down':'side'}
 // ---------- actions (global for inline handlers) ----------
 window.setView=v=>{view=v;render()};
 window.setMe=id=>{S.me=id;save();toast('Now acting as '+person(id).code+' (demo: both sides in this browser)');render()};
-window.toggleMember=id=>{const i=S.trip.memberIds.indexOf(id);if(i>=0){if(S.trip.memberIds.length<=2)return toast('A trip needs at least 2 people');S.trip.memberIds.splice(i,1)}else S.trip.memberIds.push(id);log(me().code+(i>=0?' removed ':' added ')+person(id).code+' '+(i>=0?'from':'to')+' the trip');save();render()};
+// Mirrors firestore.rules: only the owner changes who's on the trip; anyone else may only remove themselves (leave).
+window.toggleMember=id=>{const i=S.trip.memberIds.indexOf(id);const isOwner=S.me===S.trip.owner;
+  if(id===S.trip.owner&&i>=0)return toast('The trip owner can’t be removed');
+  if(!isOwner&&!(i>=0&&id===S.me))return toast('Only the trip owner ('+person(S.trip.owner).code+') can add or remove people — you can leave the trip yourself');
+  if(i>=0){if(S.trip.memberIds.length<=2)return toast('A trip needs at least 2 people');S.trip.memberIds.splice(i,1)}else S.trip.memberIds.push(id);log(me().code+(i>=0?' removed ':' added ')+person(id).code+' '+(i>=0?'from':'to')+' the trip');save();render()};
 window.cycleVote=(itemId)=>{const it=S.items.find(x=>x.id===itemId);const cur=it.votes[S.me]??0;it.votes[S.me]=cur===1?0:cur===0?-1:1;log(me().code+' voted '+thumbIcon(it.votes[S.me])+' on '+it.name);save();render()};
 window.react=(kind,id,emoji)=>{const obj=kind==='item'?S.items.find(x=>x.id===id):S.proposals.find(x=>x.id===id);obj.reactions=obj.reactions||{};obj.reactions[emoji]=(obj.reactions[emoji]||0)+1;log(me().code+' reacted '+emoji+' to '+(obj.name||obj.title));save();render()};
 window.addComment=(kind,id)=>{const inp=document.getElementById('c-'+kind+'-'+id);const text=inp.value.trim();if(!text)return;const obj=kind==='item'?S.items.find(x=>x.id===id):S.proposals.find(x=>x.id===id);obj.comments=obj.comments||[];obj.comments.push({by:S.me,text,at:'Just now'});log(me().code+' commented on '+(obj.name||obj.title));save();render()};
@@ -111,8 +122,12 @@ window.voteProposal=(id,v)=>{const p=S.proposals.find(x=>x.id===id);p.votes[S.me
 window.addMoment=()=>{const label=$('#momentLabel').value.trim()||'New shared moment';S.moments.unshift({id:uid(),emoji:'📸',label:label+' (photo stub — demo)'});log(me().code+' added a shared moment: '+label);save();render()};
 window.copyInvite=()=>{const link=location.origin+location.pathname+'#join='+S.trip.code;const txt='🌴 You’re invited to Holidate: “'+S.trip.name+'” ('+S.trip.type+')\nJoin code: '+S.trip.code+'\n'+link+'\nInvite-only — no public link, just us.';
   if(navigator.clipboard)navigator.clipboard.writeText(txt).then(()=>toast('Invite copied — send it to your person'));else toast(txt);log(me().code+' copied the invite for '+S.trip.name)};
-window.joinTrip=()=>{const code=$('#joinCode').value.trim().toUpperCase();if(code===S.trip.code){toast('You’re in! (Demo joins work in this browser)');log(me().code+' joined via invite code')}else toast('That code doesn’t match this demo trip ('+S.trip.code+')')};
-window.createTrip=()=>{const name=$('#tripName').value.trim();if(!name)return toast('Name the trip');S.trip={name,type:$('#tripType').value,code:'SUN-'+Math.floor(1000+Math.random()*9000),memberIds:[S.me,members().find(m=>m.id!==S.me)?.id||'p2'],owner:S.me};S.proposals=[];log(me().code+' created a new invite-only trip: '+name);save();render()};
+// Mirrors firestore.rules: a valid invite for THIS trip lets you add only yourself.
+window.joinTrip=()=>{const code=$('#joinCode').value.trim().toUpperCase();const inv=(S.invites||{})[code];
+  if(!inv||inv.tripId!==S.trip.id)return toast('That code doesn’t match this demo trip ('+S.trip.code+')');
+  if(S.trip.memberIds.includes(S.me))return toast('You’re already on this trip 🌴');
+  S.trip.memberIds.push(S.me);log(me().code+' joined via invite code');save();render();toast('You’re in! (Demo joins work in this browser)')};
+window.createTrip=()=>{const name=$('#tripName').value.trim();if(!name)return toast('Name the trip');S.trip={id:'t'+uid(),name,type:$('#tripType').value,code:'SUN-'+Math.floor(1000+Math.random()*9000),memberIds:[S.me,members().find(m=>m.id!==S.me)?.id||'p2'],owner:S.me};S.invites=S.invites||{};S.invites[S.trip.code]=inviteDoc(S.trip);S.proposals=[];log(me().code+' created a new invite-only trip: '+name);save();render()};
 window.resetDemo=()=>{localStorage.removeItem(KEY);S=seed();save();render();toast('Demo reset with fresh sample data')};
 window.loadSample=()=>{S=seed();save();render();toast('Sample data loaded')};
 
