@@ -71,12 +71,13 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.opacity=1;setTimeo
 function log(text){S.feed.unshift({id:uid(),text,at:'Just now'});S.feed=S.feed.slice(0,30)}
 function isBusy(pid,date){return (S.busy[pid]||[]).some(b=>date>=b.start&&date<=b.end)}
 function allFree(date){return members().every(p=>!isBusy(p.id,date))}
-function mention(text){return esc(text).replace(/@([\w ’']+)/g,'<span class="mention">@$1</span>')}
+// Highlight @CodeName for known crew only (both sides are already HTML-escaped, so this can't inject markup).
+function mention(text){const codes=S.people.map(p=>esc(p.code)).sort((a,b)=>b.length-a.length);let out=esc(text).replace(/[\u0000\u0001]/g,"");codes.forEach(c=>{out=out.split('@'+c).join('\u0000'+c+'\u0001')});return out.replace(/\u0000([^\u0001]*)\u0001/g,'<span class="mention">@$1</span>')}
 function thumbIcon(v){return v===1?'👍':v===-1?'👎':'👉'}
 function thumbCls(v){return v===1?'up':v===-1?'down':'side'}
 
 // ---------- actions (global for inline handlers) ----------
-window.setView=v=>{view=v;render()};
+window.setView=v=>{const ch=v!==view;view=v;render();if(ch)window.scrollTo({top:0})};
 window.setMe=id=>{S.me=id;save();toast('Now acting as '+person(id).code+' (demo: both sides in this browser)');render()};
 // Mirrors firestore.rules: only the owner changes who's on the trip; anyone else may only remove themselves (leave).
 window.toggleMember=id=>{const i=S.trip.memberIds.indexOf(id);const isOwner=S.me===S.trip.owner;
@@ -132,87 +133,148 @@ window.resetDemo=()=>{localStorage.removeItem(KEY);S=seed();save();render();toas
 window.loadSample=()=>{S=seed();save();render();toast('Sample data loaded')};
 
 // ---------- render ----------
+// Inline SVG icons (Lucide-style, 24px grid, stroke = currentColor) — crisp at any size, themeable via CSS.
+const ICONS={
+  home:'<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/>',
+  calendar:'<rect x="3" y="4.5" width="18" height="16.5" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/>',
+  heart:'<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>',
+  bed:'<path d="M2 20v-8a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v8"/><path d="M4 10V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v4"/><path d="M12 4v6M2 18h20"/>',
+  plane:'<path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/>',
+  users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+  send:'<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+  lock:'<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  plus:'<path d="M12 5v14M5 12h14"/>',
+  sparkles:'<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>',
+  check:'<path d="M20 6 9 17l-5-5"/>',
+  x:'<path d="M18 6 6 18M6 6l12 12"/>',
+  pencil:'<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
+  bell:'<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  search:'<circle cx="11" cy="11" r="7.5"/><path d="m21 21-4.3-4.3"/>',
+  trash:'<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  camera:'<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
+  activity:'<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  list:'<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M12 11h4M12 16h4M8 11h.01M8 16h.01"/>',
+  upload:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
+  thumb:'<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>',
+  login:'<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/>',
+  ban:'<circle cx="12" cy="12" r="9"/><path d="m5.7 5.7 12.6 12.6"/>',
+  pin:'<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>',
+  refresh:'<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M8 16H3v5"/>',
+  info:'<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
+  plug:'<path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>'
+};
+const ic=(n,cls='')=>'<svg class="ic '+cls+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">'+ICONS[n]+'</svg>';
+const LOGO='<svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="var(--primary)"/><circle cx="20.5" cy="12" r="5" fill="var(--accent)"/><path d="M5 21.5c2.2 0 2.2-1.6 4.4-1.6s2.2 1.6 4.4 1.6 2.2-1.6 4.4-1.6 2.2 1.6 4.4 1.6 2.2-1.6 4.4-1.6" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/><path d="M5 26c2.2 0 2.2-1.6 4.4-1.6s2.2 1.6 4.4 1.6 2.2-1.6 4.4-1.6 2.2 1.6 4.4 1.6 2.2-1.6 4.4-1.6" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width="2" stroke-linecap="round"/></svg>';
+const TABS=[['home','Trip home','Home','home'],['calendar','Calendars','Dates','calendar'],['wishlist','Wishlist & votes','Wishlist','heart'],['comfort','Comfort check','Comfort','bed'],['deals','Flight finder','Flights','plane'],['crew','My Travel Crew','Crew','users']];
+const sh=(icon,title,extra='')=>'<div class="sh"><h3>'+ic(icon)+'<span>'+title+'</span></h3>'+extra+'</div>';
+function thumbBadge(v){return '<span class="vt '+thumbCls(v)+'">'+ic('thumb')+'</span>'}
 function commentsHTML(kind,obj){
-  const list=(obj.comments||[]).map(c=>'<div class="comment"><b>'+esc(person(c.by).code)+'</b> <span class="muted">'+esc(c.at)+'</span><br>'+mention(c.text)+'</div>').join('');
-  return list+'<div class="row"><input id="c-'+kind+'-'+obj.id+'" placeholder="Comment… try @'+esc(members()[1]?.code||'friend')+'"><button class="btn ghost small" onclick="addComment(\''+kind+'\',\''+obj.id+'\')">Post</button></div>';
+  const list=(obj.comments||[]).map(c=>'<div class="comment"><div class="who"><b>'+esc(person(c.by).code)+'</b><span class="muted">'+esc(c.at)+'</span></div><div>'+mention(c.text)+'</div></div>').join('');
+  return (list?'<div class="comments">'+list+'</div>':'')+'<div class="inputrow"><input id="c-'+kind+'-'+obj.id+'" aria-label="Write a comment" placeholder="Comment… try @'+esc(members()[1]?.code||'friend')+'"><button class="btn ghost small" onclick="addComment(\''+kind+'\',\''+obj.id+'\')">Post</button></div>';
 }
 function reactionsHTML(kind,obj){
-  return '<div class="row">'+['❤️','🌴','🔥'].map(e=>'<button class="react" onclick="react(\''+kind+'\',\''+obj.id+'\',\''+e+'\')">'+e+' '+((obj.reactions||{})[e]||0)+'</button>').join('')+'</div>';
+  return '<div class="reacts">'+['❤️','🌴','🔥'].map(e=>'<button class="react" aria-label="React '+e+'" onclick="react(\''+kind+'\',\''+obj.id+'\',\''+e+'\')"><span>'+e+'</span><b>'+((obj.reactions||{})[e]||0)+'</b></button>').join('')+'</div>';
 }
 function voteRow(it){
-  return '<div class="row spread"><div><div class="muted">Tap your thumb — 👍 love · 👉 sideways / maybe · 👎 pass</div><div class="row" style="margin-top:6px"><button class="thumb '+thumbCls(it.votes[S.me]??0)+'" onclick="cycleVote(\''+it.id+'\')" aria-label="cycle vote">'+thumbIcon(it.votes[S.me]??0)+'</button><span class="votes">'+members().map(p=>esc(p.code)+': '+thumbIcon(it.votes[p.id]??0)).join(' · ')+'</span></div></div>'+(members().every(p=>it.votes[p.id]===1)?'<span class="tag tq">💚 MATCH — everyone loves it</span>':'')+'</div>';
+  const v=it.votes[S.me]??0, lbl=v===1?'Love it':v===-1?'Pass':'Maybe';
+  const match=members().every(p=>it.votes[p.id]===1);
+  return '<div class="voterow"><button class="thumb '+thumbCls(v)+'" onclick="cycleVote(\''+it.id+'\')" aria-label="Your vote: '+lbl+'. Tap to change">'+ic('thumb')+'<span>'+lbl+'</span></button>'
+    +'<div class="vlist">'+members().map(p=>'<span class="vchip" title="'+esc(p.code)+'">'+thumbBadge(it.votes[p.id]??0)+esc(p.code)+'</span>').join('')+'</div>'
+    +(match?'<span class="tag match">'+ic('check')+'Match — everyone loves it</span>':'')+'</div>';
 }
 function render(){
   const m=members();
-  let h='';
-  h+='<div class="hero"><span class="badge">DEMO MODE · localStorage · invite-only</span><h1>🏝️ Holidate</h1><p>Plan a holiday <em>together</em> — calendars, wishlists, comfort checks & flight deals, in one sunny place. 🌅🍹</p><p class="wave">〰️ 🌊 〰️ 🐚 〰️ 🌊 〰️</p></div>';
-  h+='<div class="wrap"><div class="sticky"><div class="switcher"><b style="white-space:nowrap">Acting as:</b>'+S.people.map(p=>'<button class="pill '+(S.me===p.id?'on':'')+'" onclick="setMe(\''+p.id+'\')">'+p.emoji+' '+esc(p.code)+'</button>').join('')+'<span class="muted">Demo: both sides live in this browser — switch to answer/vote as each person.</span></div>';
-  const tabs=[['home','🏠 Trip home'],['calendar','📅 Calendars'],['wishlist','💛 Wishlist & votes'],['comfort','🛏️ Comfort check'],['deals','✈️ Flight finder'],['crew','🌴 My Travel Crew']];
-  h+='<div class="tabs">'+tabs.map(t=>'<button class="tab '+(view===t[0]?'on':'')+'" onclick="setView(\''+t[0]+'\')">'+t[1]+'</button>').join('')+'</div></div>';
+  const tab=TABS.find(t=>t[0]===view)||TABS[0];
+  let h='<div class="shell">';
+  // ---- side nav (desktop) ----
+  h+='<aside class="sidenav" aria-label="Main"><div class="brand">'+LOGO+'<div><b>Holidate</b><small>Plan a holiday, together</small></div></div><nav class="navlist">'
+    +TABS.map(t=>'<button class="navitem '+(view===t[0]?'on':'')+'" '+(view===t[0]?'aria-current="page" ':'')+'onclick="setView(\''+t[0]+'\')">'+ic(t[3])+'<span>'+t[1]+'</span></button>').join('')
+    +'</nav><div class="sidefoot"><span class="badge">'+ic('lock')+'Invite-only · demo</span><p>Data stays in this browser until Firebase is connected.</p></div></aside>';
+  // ---- main ----
+  h+='<main class="main"><header class="topbar"><div class="topline"><div class="brand mobile-only">'+LOGO+'<b>Holidate</b></div><span class="badge mobile-only">Demo</span></div>'
+    +'<div class="acting"><span class="eyebrow">Acting as</span><div class="seg scrollx" role="group" aria-label="Acting as">'+S.people.map(p=>'<button class="pill '+(S.me===p.id?'on':'')+'" aria-pressed="'+(S.me===p.id)+'" onclick="setMe(\''+p.id+'\')"><span class="em">'+esc(p.emoji)+'</span>'+esc(p.code)+'</button>').join('')+'</div></div></header><div class="content">';
+
+  const pageHead=(title,sub)=>'<div class="pagehead"><h1>'+title+'</h1>'+(sub?'<p>'+sub+'</p>':'')+'</div>';
 
   if(view==='home'){
-    h+='<div class="grid g2"><section class="card goldframe"><h2 style="margin-top:0">'+esc(S.trip.name)+'</h2><div class="row"><span class="tag">'+esc(S.trip.type)+'</span><span class="tag tq">🔒 Invite-only · code '+esc(S.trip.code)+'</span><span class="tag plum">No public discovery</span></div>'
-      +'<p class="muted">Only people with the invite link/code can join. Share it with your person — nobody else can find this trip.</p><div class="row"><button class="btn sun" onclick="copyInvite()">📩 Copy invite link + code</button></div>'
-      +'<label>Join with a code</label><div class="row"><input id="joinCode" placeholder="e.g. '+esc(S.trip.code)+'"><button class="btn ghost" onclick="joinTrip()">Join</button></div>'
-      +'<label>Start a new trip</label><div class="row"><input id="tripName" placeholder="Trip name — e.g. Girls’ Beach Week"><select id="tripType" style="max-width:190px">'+['Couple','Girls trip','Friends','Family','Work crew','Custom'].map(t=>'<option '+(S.trip.type===t?'selected':'')+'>'+t+'</option>').join('')+'</select><button class="btn tq" onclick="createTrip()">Create trip</button></div></section>'
-      +'<section class="card"><h3 style="margin-top:0">👥 Who’s on this trip?</h3><p class="muted">Tap to add/remove from your Travel Crew. Trips can be 2+ people — not just couples.</p><div class="row">'+S.people.map(p=>'<button class="chip gold '+(S.trip.memberIds.includes(p.id)?'on':'')+'" onclick="toggleMember(\''+p.id+'\')">'+p.emoji+' '+esc(p.code)+(S.trip.memberIds.includes(p.id)?' ✓':'')+'</button>').join('')+'</div><p class="muted" style="margin-top:10px">On this trip: '+m.map(p=>esc(p.code)).join(' · ')+'</p></section></div>';
+    h+='<section class="hero"><div class="hero-body"><span class="eyebrow light">'+ic('lock')+'Invite-only trip</span><h1>'+esc(S.trip.name)+'</h1>'
+      +'<div class="row"><span class="tag onhero">'+esc(S.trip.type)+'</span><span class="tag onhero">Code '+esc(S.trip.code)+'</span><span class="tag onhero">'+m.length+' travelers</span></div>'
+      +'<p>Only people with your invite link or code can join — nobody else can find this trip.</p><div class="row"><button class="btn sun" onclick="copyInvite()">'+ic('send')+'Copy invite link</button></div></div>'
+      +'<span class="hero-sun" aria-hidden="true"></span><svg class="hero-wave" viewBox="0 0 400 120" preserveAspectRatio="none" aria-hidden="true"><path d="M0 78c40 0 40-14 80-14s40 14 80 14 40-14 80-14 40 14 80 14 40-14 80-14v56H0Z" fill="#fff" opacity=".10"/><path d="M0 96c40 0 40-14 80-14s40 14 80 14 40-14 80-14 40 14 80 14 40-14 80-14v38H0Z" fill="#fff" opacity=".14"/></svg></section>';
 
-    // proposals
-    h+='<section class="card" style="margin-top:14px"><div class="row spread"><h2 style="margin:0">✨ Proposed holidays</h2><button class="btn sun" onclick="genProposals()">Generate proposals</button></div><p class="muted">Built from everyone’s overlapping free days + destinations everyone loved + budget. Each person accepts, tweaks or declines — when everyone accepts, it becomes your itinerary.</p>';
-    if(!S.proposals.length)h+='<p class="muted">No proposals yet — tap <b>Generate proposals</b> (we seeded a free overlap + an Aruba match 💚).</p>';
-    h+=S.proposals.map(p=>'<article class="card '+(p.status?'goldframe':'')+'" style="margin-top:12px"><div class="row spread"><h3 style="margin:0">🌴 '+esc(p.title)+'</h3><b>'+fmtR(p.start,p.end)+'</b></div><p class="muted">'+esc(p.why)+'</p>'+(p.status?'<span class="tag tq">'+esc(p.status)+'</span> ':'')+'<span class="votes">'+m.map(x=>esc(x.code)+': '+(p.votes[x.id]||'—')).join(' · ')+'</span><div class="row" style="margin-top:10px"><button class="btn tq small" onclick="voteProposal(\''+p.id+'\',\'Accept\')">✅ Accept</button><button class="btn ghost small" onclick="voteProposal(\''+p.id+'\',\'Tweak\')">🛠️ Tweak</button><button class="btn ghost small" onclick="voteProposal(\''+p.id+'\',\'Decline\')">Decline</button></div><div style="margin-top:10px">'+reactionsHTML('proposal',p)+commentsHTML('proposal',p)+'</div></article>').join('')+'</section>';
+    h+='<div class="grid g2 mt"><section class="card">'+sh('users','Who’s on this trip?','<span class="count">'+m.length+'</span>')+'<p class="muted">Tap to add or remove from your Travel Crew. Trips can be 2+ people — not just couples.</p><div class="chips">'
+      +S.people.map(p=>{const on=S.trip.memberIds.includes(p.id);return '<button class="chip '+(on?'on':'')+'" aria-pressed="'+on+'" onclick="toggleMember(\''+p.id+'\')"><span class="em">'+esc(p.emoji)+'</span>'+esc(p.code)+(on?ic('check','sm'):ic('plus','sm'))+'</button>'}).join('')+'</div></section>'
+      +'<section class="card">'+sh('login','Join or start a trip')+'<label for="joinCode">Join with a code</label><div class="inputrow"><input id="joinCode" placeholder="e.g. '+esc(S.trip.code)+'"><button class="btn ghost" onclick="joinTrip()">Join</button></div>'
+      +'<label for="tripName">Start a new trip</label><div class="stack"><input id="tripName" placeholder="Trip name — e.g. Girls’ Beach Week"><div class="inputrow"><select id="tripType" aria-label="Trip type">'+['Couple','Girls trip','Friends','Family','Work crew','Custom'].map(t=>'<option '+(S.trip.type===t?'selected':'')+'>'+t+'</option>').join('')+'</select><button class="btn primary" onclick="createTrip()">Create trip</button></div></div></section></div>';
 
-    h+='<div class="grid g2" style="margin-top:14px"><section class="card"><h3 style="margin-top:0">🧾 Itinerary</h3>'+S.itinerary.map(i=>'<div class="feeditem"><b>'+esc(i.title)+'</b><br><span class="muted">'+esc(i.detail)+'</span></div>').join('')+'</section>'
-      +'<section class="card"><h3 style="margin-top:0">📣 Trip activity</h3>'+S.feed.slice(0,10).map(f=>'<div class="feeditem">'+esc(f.text)+'<br><span class="muted">'+esc(f.at)+'</span></div>').join('')+'</section></div>';
+    h+='<section class="card mt">'+sh('sparkles','Proposed holidays','<button class="btn sun small" onclick="genProposals()">'+ic('sparkles')+'Generate</button>')+'<p class="muted">Built from everyone’s overlapping free days, destinations everyone loved, and budget. When everyone accepts, it becomes your itinerary.</p>';
+    if(!S.proposals.length)h+='<div class="empty">No proposals yet — tap <b>Generate</b>.</div>';
+    h+=S.proposals.map(p=>'<article class="inner '+(p.status?'accepted':'')+'"><div class="ihead"><div><h4>'+esc(p.title)+'</h4><span class="date">'+ic('calendar','sm')+fmtR(p.start,p.end)+'</span></div>'+(p.status?'<span class="tag match">'+ic('check')+esc(p.status)+'</span>':'<span class="price">$'+esc(p.price)+'<small>/person</small></span>')+'</div><p class="muted">'+esc(p.why)+'</p>'
+      +'<div class="vlist">'+m.map(x=>'<span class="vchip">'+esc(x.code)+' <b class="st-'+esc((p.votes[x.id]||'none').toLowerCase())+'">'+esc(p.votes[x.id]||'—')+'</b></span>').join('')+'</div>'
+      +'<div class="actions three"><button class="btn primary small" onclick="voteProposal(\''+p.id+'\',\'Accept\')">'+ic('check')+'Accept</button><button class="btn ghost small" onclick="voteProposal(\''+p.id+'\',\'Tweak\')">'+ic('pencil')+'Tweak</button><button class="btn ghost small" onclick="voteProposal(\''+p.id+'\',\'Decline\')">'+ic('x')+'Decline</button></div>'
+      +'<div class="social">'+reactionsHTML('proposal',p)+commentsHTML('proposal',p)+'</div></article>').join('')+'</section>';
 
-    h+='<section class="card" style="margin-top:14px"><h3 style="margin-top:0">📸 Shared moments</h3><p class="muted">Photos live here once you travel — demo shows pretty stubs.</p><div class="grid g3">'+S.moments.map(x=>'<div class="moment"><div>'+x.emoji+'<div style="font-size:13px;font-weight:800">'+esc(x.label)+'</div></div></div>').join('')+'</div><label>Moment label</label><div class="row"><input id="momentLabel" placeholder="Sunset sail, day 3"><button class="btn ghost" onclick="addMoment()">Add moment stub</button></div></section>';
+    h+='<div class="grid g2 mt"><section class="card">'+sh('list','Itinerary')+'<div class="list">'+S.itinerary.map(i=>'<div class="li"><b>'+esc(i.title)+'</b><span class="muted">'+esc(i.detail)+'</span></div>').join('')+'</div></section>'
+      +'<section class="card">'+sh('activity','Trip activity')+'<div class="list feed">'+S.feed.slice(0,8).map(f=>'<div class="li"><span>'+esc(f.text)+'</span><span class="muted">'+esc(f.at)+'</span></div>').join('')+'</div></section></div>';
+
+    h+='<section class="card mt">'+sh('camera','Shared moments')+'<p class="muted">Photos live here once you travel — the demo shows stubs.</p><div class="moments">'+S.moments.map((x,i)=>'<div class="moment t'+(i%3)+'"><span class="em">'+esc(x.emoji)+'</span><span>'+esc(x.label)+'</span></div>').join('')+'</div><label for="momentLabel">Moment label</label><div class="inputrow"><input id="momentLabel" placeholder="Sunset sail, day 3"><button class="btn ghost" onclick="addMoment()">'+ic('plus')+'Add</button></div></section>';
   }
 
   if(view==='calendar'){
-    // next 42 days starting today (aligned Mon-ish simple)
-    let days='';const dows=['Su','Mo','Tu','We','Th','Fr','Sa'].map(d=>'<div class="dow">'+d+'</div>').join('');
-    for(let n=0;n<42;n++){const d=addD(today,n);const freeCount=m.filter(p=>!isBusy(p.id,d)).length;const cls=freeCount===m.length?'free':freeCount===0?'busy':'partial';days+='<div class="day '+cls+'"><b>'+new Date(d+'T12:00:00').getDate()+'</b><br>'+(cls==='free'?'💚 all free':cls==='busy'?'🔴 all busy':'🟡 '+freeCount+'/'+m.length+' free')+'</div>'}
-    h+='<section class="card"><h2 style="margin-top:0">📅 Combined availability — next 6 weeks</h2><p class="muted">Group overlap for: '+m.map(p=>esc(p.code)).join(' · ')+'. 💚 = everyone free — that’s where proposals come from.</p><div class="cal">'+dows+days+'</div></section>';
-    h+='<div class="grid g2" style="margin-top:14px"><section class="card"><h3 style="margin-top:0">➕ Add busy time for '+esc(me().code)+'</h3><label>Start</label><input type="date" id="busyStart"><label>End</label><input type="date" id="busyEnd"><label>Label</label><input id="busyLabel" placeholder="Work, family, pet sitting…"><div class="row" style="margin-top:12px"><button class="btn sun" onclick="addBusy()">Save busy block</button></div>'
-      +'<label>Upload calendar (.ics)</label><input type="file" accept=".ics,text/calendar" onchange="handleICS(event)"><p class="muted">Export from Google/Apple Calendar as .ics, then upload — we parse busy events here in your browser.</p>'
-      +'<label>Paste availability</label><textarea id="pasteBox" rows="3" placeholder="Paste text with busy dates like 2026-12-05 …"></textarea><div class="row" style="margin-top:8px"><button class="btn ghost" onclick="pasteAvail()">Add pasted busy dates</button></div>'
-      +'<p class="muted">🔌 Coming soon: direct Google Calendar & Apple Calendar sync (needs OAuth — see README).</p></section>'
-      +'<section class="card"><h3 style="margin-top:0">🚫 '+esc(me().code)+'’s busy blocks</h3>'+((S.busy[S.me]||[]).length?(S.busy[S.me].map(b=>'<div class="feeditem"><b>'+esc(b.label)+'</b><br><span class="muted">'+fmtR(b.start,b.end)+'</span> <button class="btn ghost small" onclick="delBusy(\''+b.id+'\')">Remove</button></div>').join('')):'<p class="muted">Nothing yet — wide open 🌊</p>')+'</section></div>';
+    h+=pageHead('Calendars','Combined availability for the next 6 weeks — green days are where proposals come from.');
+    const dows=['Su','Mo','Tu','We','Th','Fr','Sa'].map(d=>'<div class="dow">'+d+'</div>').join('');
+    let days='';for(let k=0;k<today.getDay();k++)days+='<div class="day pad" aria-hidden="true"></div>';
+    for(let n=0;n<42;n++){const d=addD(today,n);const freeCount=m.filter(p=>!isBusy(p.id,d)).length;const cls=freeCount===m.length?'free':freeCount===0?'busy':'partial';
+      const lbl=cls==='free'?'Free':cls==='busy'?'Busy':freeCount+'/'+m.length;
+      days+='<div class="day '+cls+(n===0?' today':'')+'" title="'+fmt(d)+': '+(cls==='free'?'everyone free':cls==='busy'?'everyone busy':freeCount+' of '+m.length+' free')+'"><b>'+new Date(d+'T12:00:00').getDate()+'</b><span>'+lbl+'</span></div>'}
+    h+='<section class="card">'+sh('calendar','Group overlap')+'<p class="muted">For '+m.map(p=>esc(p.code)).join(' · ')+'</p><div class="legend"><span><i class="free"></i>Everyone free</span><span><i class="partial"></i>Some free</span><span><i class="busy"></i>All busy</span></div><div class="cal">'+dows+days+'</div></section>';
+    h+='<div class="grid g2 mt"><section class="card">'+sh('plus','Add busy time for '+esc(me().code))+'<div class="grid g2 tight"><div><label for="busyStart">Start</label><input type="date" id="busyStart"></div><div><label for="busyEnd">End</label><input type="date" id="busyEnd"></div></div><label for="busyLabel">Label</label><input id="busyLabel" placeholder="Work, family, pet sitting…"><div class="actions"><button class="btn primary" onclick="addBusy()">Save busy block</button></div>'
+      +'<div class="divider"></div><label for="icsFile">Upload calendar (.ics)</label><label class="file" for="icsFile">'+ic('upload')+'<span>Choose an .ics file</span><input id="icsFile" type="file" accept=".ics,text/calendar" onchange="handleICS(event)"></label><p class="muted">Export from Google or Apple Calendar as .ics — we parse busy events right here in your browser.</p>'
+      +'<label for="pasteBox">Paste availability</label><textarea id="pasteBox" rows="3" placeholder="Paste text with busy dates like 2026-12-05 …"></textarea><div class="actions"><button class="btn ghost" onclick="pasteAvail()">Add pasted busy dates</button></div>'
+      +'<p class="note">'+ic('plug','sm')+'Coming soon: direct Google & Apple Calendar sync.</p></section>'
+      +'<section class="card">'+sh('ban',esc(me().code)+'’s busy blocks')+((S.busy[S.me]||[]).length?'<div class="list">'+S.busy[S.me].map(b=>'<div class="li row-li"><div><b>'+esc(b.label)+'</b><span class="muted">'+fmtR(b.start,b.end)+'</span></div><button class="iconbtn" aria-label="Remove '+esc(b.label)+'" onclick="delBusy(\''+b.id+'\')">'+ic('trash')+'</button></div>').join('')+'</div>':'<div class="empty">Nothing yet — wide open 🌊</div>')+'</section></div>';
   }
 
   if(view==='wishlist'){
-    h+='<section class="card"><h2 style="margin-top:0">💛 Add a dream, stay, bite or add-in</h2><div class="grid g2"><div><label>Type</label><select id="itKind"><option>Destination</option><option>Hotel / Airbnb</option><option>Restaurant</option><option>Activity / add-in</option></select><label>Name</label><input id="itName" placeholder="Overwater bungalow, taco tour…"></div><div><label>Place</label><input id="itPlace" placeholder="Aruba"><label>Budget ($ per person / per night)</label><input id="itBudget" type="number" placeholder="200"><label>Vibe tags (comma separated)</label><input id="itVibes" placeholder="beach, spa, sunset"></div></div><div class="row" style="margin-top:12px"><button class="btn sun" onclick="addItem()">Add to wishlist</button></div></section>';
-    h+='<div class="grid g2" style="margin-top:14px">'+S.items.map(it=>'<article class="card"><div class="biz"><div class="avatar">'+(it.kind==='Destination'?'🏝️':it.kind==='Restaurant'?'🍽️':it.kind.startsWith('Hotel')?'🏨':'🤿')+'</div><div><h3>'+esc(it.name)+'</h3><div class="sub">'+esc(it.kind)+' · '+esc(it.place||'')+' · $'+esc(it.budget)+' · added by '+esc(person(it.by).code)+'</div><div class="row" style="margin-top:6px">'+it.vibes.map(v=>'<span class="tag">'+esc(v)+'</span>').join('')+'</div></div></div><div style="margin-top:12px">'+voteRow(it)+'</div><div style="margin-top:10px">'+reactionsHTML('item',it)+commentsHTML('item',it)+'</div></article>').join('')+'</div>';
+    h+=pageHead('Wishlist & votes','Add dreams, stays, bites and add-ins — then vote together.');
+    h+='<section class="card">'+sh('plus','Add to the wishlist')+'<div class="grid g2 tight"><div><label for="itKind">Type</label><select id="itKind"><option>Destination</option><option>Hotel / Airbnb</option><option>Restaurant</option><option>Activity / add-in</option></select></div><div><label for="itName">Name</label><input id="itName" placeholder="Overwater bungalow, taco tour…"></div><div><label for="itPlace">Place</label><input id="itPlace" placeholder="Aruba"></div><div><label for="itBudget">Budget ($ per person / night)</label><input id="itBudget" type="number" placeholder="200"></div></div><label for="itVibes">Vibe tags (comma separated)</label><input id="itVibes" placeholder="beach, spa, sunset"><div class="actions"><button class="btn sun" onclick="addItem()">'+ic('plus')+'Add to wishlist</button></div></section>';
+    h+='<div class="grid g2 mt">'+S.items.map(it=>'<article class="card item"><div class="biz"><div class="avatar">'+(it.kind==='Destination'?'🏝️':it.kind==='Restaurant'?'🍽️':it.kind.startsWith('Hotel')?'🏨':'🤿')+'</div><div class="bizbody"><span class="eyebrow">'+esc(it.kind)+'</span><h3>'+esc(it.name)+'</h3><div class="meta">'+(it.place?'<span>'+ic('pin','sm')+esc(it.place)+'</span>':'')+'<span>$'+esc(it.budget)+'</span><span>by '+esc(person(it.by).code)+'</span></div></div></div>'
+      +(it.vibes.length?'<div class="chips sm">'+it.vibes.map(v=>'<span class="tag">'+esc(v)+'</span>').join('')+'</div>':'')+voteRow(it)+'<div class="social">'+reactionsHTML('item',it)+commentsHTML('item',it)+'</div></article>').join('')+'</div>';
   }
 
   if(view==='comfort'){
     const fields=[['room','Room setup',['Shared room','Same room, separate beds','Separate rooms']],['split','Budget split',['50/50','Take turns','One person covers, settle later','One covers flights, other covers stays']],['flight','Flight times',['Morning','Afternoon','Evening','No red-eyes','Cheapest, any time']],['seat','Seat preference',['Window','Aisle','Middle (brave)','Together, wherever']],['pace','Trip pace',['Relaxed','Mix of both','Adventurous / packed']],['nightlife','Nightlife',['Early nights','Golden-hour drinks','One big night out','Out most nights']],['food','Food style',['Foodie — book the good places','Casual & local','Cook some meals in']]];
     const addins=['Spa','Excursions','Rental car','Childcare','Pet care','Airport lounge','Travel insurance'];
     const mine=S.prefs[S.me];
-    h+='<section class="card"><h2 style="margin-top:0">🛏️ Comfort check — '+esc(me().code)+'</h2><p class="muted">Answer as whoever is selected up top. Switch people to fill in theirs — just like The Roster, but for holidays.</p><div class="grid g2">'
-      +fields.map(f=>'<div><label>'+f[1]+'</label><div class="row">'+f[2].map(o=>'<button class="chip '+(mine[f[0]]===o?'on':'')+'" onclick="setPref(\''+f[0]+'\',\''+esc(o).replace(/'/g,"\\'")+'\')">'+o+'</button>').join('')+'</div></div>').join('')
-      +'<div><label>Add-ins I want</label><div class="row">'+addins.map(a=>'<button class="chip gold '+(mine.addins.includes(a)?'on':'')+'" onclick="toggleAddin(\''+a+'\')">'+a+'</button>').join('')+'</div></div></div></section>';
-    // compatibility
-    const diffs=[];fields.forEach(f=>{const vals=[...new Set(m.map(p=>S.prefs[p.id][f[0]]))];if(vals.length>1)diffs.push('<div class="feeditem"><b>'+f[1]+':</b> '+m.map(p=>esc(p.code)+' — '+esc(S.prefs[p.id][f[0]])).join(' · ')+'</div>')});
-    const addDiff=(()=>{const all=[...new Set(m.flatMap(p=>S.prefs[p.id].addins))];return all.filter(a=>!m.every(p=>S.prefs[p.id].addins.includes(a))).map(a=>'<div class="feeditem"><b>Add-in '+esc(a)+':</b> wanted by '+m.filter(p=>S.prefs[p.id].addins.includes(a)).map(p=>esc(p.code)).join(', ')+'</div>').join('')})();
-    h+='<section class="card" style="margin-top:14px"><h3 style="margin-top:0">💞 Group compatibility</h3><p class="muted">'+(diffs.length||addDiff?'A few things to talk about over a beach drink 🍹:':'You’re beautifully in sync — book the trip! 🌴')+'</p>'+diffs.join('')+addDiff
-      +'<h4>Where you already agree</h4><p class="muted">'+fields.filter(f=>new Set(m.map(p=>S.prefs[p.id][f[0]])).size===1).map(f=>f[1]+': '+esc(S.prefs[m[0].id][f[0]])).join(' · ')+'</p></section>';
+    h+=pageHead('Comfort check','Answering as <b>'+esc(me().code)+'</b>. Switch “Acting as” to fill in each person’s — just like The Roster, but for holidays.');
+    h+='<section class="card"><div class="prefs">'
+      +fields.map(f=>'<div class="pref"><div class="plabel">'+f[1]+'</div><div class="chips">'+f[2].map(o=>'<button class="chip '+(mine[f[0]]===o?'on':'')+'" aria-pressed="'+(mine[f[0]]===o)+'" onclick="setPref(\''+f[0]+'\',\''+esc(o).replace(/'/g,"\\'")+'\')">'+esc(o)+'</button>').join('')+'</div></div>').join('')
+      +'<div class="pref"><div class="plabel">Add-ins I want</div><div class="chips">'+addins.map(a=>{const on=mine.addins.includes(a);return '<button class="chip gold '+(on?'on':'')+'" aria-pressed="'+on+'" onclick="toggleAddin(\''+a+'\')">'+(on?ic('check','sm'):'')+a+'</button>'}).join('')+'</div></div></div></section>';
+    const diffs=[];fields.forEach(f=>{const vals=[...new Set(m.map(p=>S.prefs[p.id][f[0]]))];if(vals.length>1)diffs.push('<div class="li"><b>'+f[1]+'</b><span class="muted">'+m.map(p=>esc(p.code)+': '+esc(S.prefs[p.id][f[0]])).join(' · ')+'</span></div>')});
+    const addDiff=(()=>{const all=[...new Set(m.flatMap(p=>S.prefs[p.id].addins))];return all.filter(a=>!m.every(p=>S.prefs[p.id].addins.includes(a))).map(a=>'<div class="li"><b>Add-in: '+esc(a)+'</b><span class="muted">Wanted by '+m.filter(p=>S.prefs[p.id].addins.includes(a)).map(p=>esc(p.code)).join(', ')+'</span></div>').join('')})();
+    const agree=fields.filter(f=>new Set(m.map(p=>S.prefs[p.id][f[0]])).size===1);
+    h+='<div class="grid g2 mt"><section class="card">'+sh('heart','To talk about','<span class="count">'+(diffs.length+(addDiff?addDiff.split('class="li"').length-1:0))+'</span>')+'<p class="muted">'+(diffs.length||addDiff?'A few things to settle over a beach drink 🍹':'You’re beautifully in sync — book the trip! 🌴')+'</p><div class="list">'+diffs.join('')+addDiff+'</div></section>'
+      +'<section class="card">'+sh('check','Where you already agree','<span class="count">'+agree.length+'</span>')+(agree.length?'<div class="list">'+agree.map(f=>'<div class="li"><b>'+f[1]+'</b><span class="muted">'+esc(S.prefs[m[0].id][f[0]])+'</span></div>').join('')+'</div>':'<div class="empty">Nothing matched yet.</div>')+'</section></div>';
   }
 
   if(view==='deals'){
-    h+='<section class="card"><h2 style="margin-top:0">✈️ Flight price finder</h2><p class="muted">Set a finder and we’ll surface sample deals in demo. Real alerts need a flight API key later (Skyscanner / Amadeus — see README).</p><div class="grid g2"><div><label>From</label><input id="fOrigin" placeholder="Your home airport (e.g. DEN)"><label>To</label><input id="fDest" placeholder="Anywhere warm, or Aruba"></div><div><label>Max price ($)</label><input id="fMax" type="number" value="1200"><label>Date window</label><select id="fWindow"><option>Next 3 months</option><option>Next 6 months</option><option>School holidays</option></select><label>Min trip days</label><input id="fDays" type="number" value="5"></div></div><div class="row" style="margin-top:12px"><button class="btn ghost" onclick="addFinder()">Save finder / alert</button><button class="btn sun" onclick="findDeals()">🔎 Find deals</button></div>'
-      +'<h4>Your alerts</h4>'+S.finders.map(f=>'<div class="feeditem">🔔 '+esc(f.origin)+' → '+esc(f.dest)+' · under $'+f.max+' · '+esc(f.window)+' · '+f.days+'+ days</div>').join('')+'</section>';
-    h+='<div class="grid g3" style="margin-top:14px">'+S.deals.map(d=>'<article class="card goldframe"><h3 style="margin:0">✈️ '+esc(d.dest)+'</h3><div class="kpi">'+(d.price?'$'+d.price:'—')+'</div><p class="muted">From '+esc(d.from)+'<br>'+esc(d.dates)+'<br>'+esc(d.note)+'</p><span class="tag tq">Sample deal · demo</span></article>').join('')+'</div>';
-    h+='<section class="card" style="margin-top:14px"><h3 style="margin-top:0">🧾 Itinerary stubs</h3>'+S.itinerary.map(i=>'<div class="feeditem"><b>'+esc(i.title)+'</b><br><span class="muted">'+esc(i.detail)+'</span></div>').join('')+'</section>';
+    h+=pageHead('Flight finder','Set a finder and we’ll surface sample deals. Real alerts need a flight API key later (see README).');
+    h+='<section class="card">'+sh('search','New finder')+'<div class="grid g2 tight"><div><label for="fOrigin">From</label><input id="fOrigin" placeholder="Home airport (e.g. DEN)"></div><div><label for="fDest">To</label><input id="fDest" placeholder="Anywhere warm, or Aruba"></div><div><label for="fMax">Max price ($)</label><input id="fMax" type="number" value="1200"></div><div><label for="fWindow">Date window</label><select id="fWindow"><option>Next 3 months</option><option>Next 6 months</option><option>School holidays</option></select></div><div><label for="fDays">Min trip days</label><input id="fDays" type="number" value="5"></div></div><div class="actions"><button class="btn sun" onclick="findDeals()">'+ic('search')+'Find deals</button><button class="btn ghost" onclick="addFinder()">'+ic('bell')+'Save alert</button></div>'
+      +'<div class="divider"></div><div class="plabel">Your alerts</div><div class="list">'+S.finders.map(f=>'<div class="li row-li"><div><b>'+esc(f.origin)+' → '+esc(f.dest)+'</b><span class="muted">Under $'+esc(f.max)+' · '+esc(f.window)+' · '+esc(f.days)+'+ days</span></div>'+ic('bell','muted-ic')+'</div>').join('')+'</div></section>';
+    h+='<div class="deals mt">'+S.deals.map(d=>'<article class="card deal"><div class="ihead"><span class="eyebrow">'+ic('plane','sm')+'Sample deal</span>'+(/Well under/.test(d.note)?'<span class="tag hot">Great price</span>':'')+'</div><h3>'+esc(d.dest)+'</h3><div class="kpi">'+(d.price?'$'+esc(d.price):'—')+'</div><div class="meta col"><span>From '+esc(d.from)+'</span><span>'+esc(d.dates)+'</span></div><p class="muted">'+esc(d.note.replace(/^🔥 /,''))+'</p></article>').join('')+'</div>';
+    h+='<section class="card mt">'+sh('list','Itinerary stubs')+'<div class="list">'+S.itinerary.map(i=>'<div class="li"><b>'+esc(i.title)+'</b><span class="muted">'+esc(i.detail)+'</span></div>').join('')+'</div></section>';
   }
 
   if(view==='crew'){
-    h+='<section class="card"><h2 style="margin-top:0">🌴 My Travel Crew</h2><p class="muted">Your roster of travel partners — code names, travel styles, past trips and comfort at a glance. Tap people on the Trip home to add them to a trip.</p></section><div class="grid g2" style="margin-top:14px">'
-      +S.people.map(p=>'<article class="card '+(S.trip.memberIds.includes(p.id)?'goldframe':'')+'"><div class="biz"><div class="avatar">'+p.emoji+'</div><div><h3>'+esc(p.code)+'</h3><div class="sub">'+esc(p.name)+' · '+esc(p.style)+'</div><div class="row" style="margin-top:6px">'+p.tags.map(t=>'<span class="tag tq">'+esc(t)+'</span>').join('')+'</div><p class="muted">Past trips: '+esc(p.past)+'<br>Comfort: '+esc(S.prefs[p.id].room)+' · '+esc(S.prefs[p.id].pace)+' · '+esc(S.prefs[p.id].split)+'</p></div></div><div class="row"><button class="btn '+(S.trip.memberIds.includes(p.id)?'ghost':'sun')+' small" onclick="toggleMember(\''+p.id+'\')">'+(S.trip.memberIds.includes(p.id)?'On this trip ✓ — tap to remove':'Add to this trip')+'</button><button class="btn ghost small" onclick="setMe(\''+p.id+'\');setView(\'comfort\')">View comfort</button></div></article>').join('')+'</div>';
+    h+=pageHead('My Travel Crew','Your roster of travel partners — code names, travel styles, past trips and comfort at a glance.');
+    h+='<div class="grid g2">'+S.people.map(p=>{const on=S.trip.memberIds.includes(p.id);return '<article class="card person '+(on?'ontrip':'')+'"><div class="biz"><div class="avatar">'+esc(p.emoji)+'</div><div class="bizbody">'+(on?'<span class="eyebrow gold">'+ic('check','sm')+'On this trip</span>':'<span class="eyebrow">Travel crew</span>')+'<h3>'+esc(p.code)+'</h3><div class="sub">'+esc(p.name)+'</div></div></div>'
+      +'<p class="style">“'+esc(p.style)+'”</p><div class="chips sm">'+p.tags.map(t=>'<span class="tag tq">'+esc(t)+'</span>').join('')+'</div>'
+      +'<dl class="facts"><div><dt>Past trips</dt><dd>'+esc(p.past)+'</dd></div><div><dt>Comfort</dt><dd>'+esc(S.prefs[p.id].room)+' · '+esc(S.prefs[p.id].pace)+' · '+esc(S.prefs[p.id].split)+'</dd></div></dl>'
+      +'<div class="actions"><button class="btn '+(on?'ghost':'primary')+' small" onclick="toggleMember(\''+p.id+'\')">'+(on?ic('x')+'Remove':ic('plus')+'Add to trip')+'</button><button class="btn ghost small" onclick="setMe(\''+p.id+'\');setView(\'comfort\')">'+ic('bed')+'View comfort</button></div></article>'}).join('')+'</div>';
   }
 
-  h+='<section class="card" style="margin-top:14px"><div class="row spread"><span class="muted">Holidate demo · data lives only in this browser (localStorage). Firebase setup in the README turns on real invite-only sharing.</span><span><button class="btn ghost small" onclick="loadSample()">Load sample data</button> <button class="btn ghost small" onclick="resetDemo()">Reset demo</button></span></div></section>';
-  h+='</div><nav class="bottombar">'+tabs.map(t=>'<button class="'+(view===t[0]?'on':'')+'" onclick="setView(\''+t[0]+'\')">'+t[1].split(' ')[0]+'<br>'+t[1].split(' ').slice(1).join(' ')+'</button>').join('')+'</nav>';
+  h+='<footer class="demo"><div>'+ic('info')+'<span><b>Demo mode.</b> Data lives only in this browser. Switch “Acting as” to play each side — Firebase setup in the README turns on real invite-only sharing.</span></div><div class="actions"><button class="btn ghost small" onclick="loadSample()">Load sample data</button><button class="btn ghost small" onclick="resetDemo()">'+ic('refresh')+'Reset demo</button></div></footer>';
+  h+='</div></main></div><nav class="bottombar" aria-label="Main">'+TABS.map(t=>'<button class="'+(view===t[0]?'on':'')+'" '+(view===t[0]?'aria-current="page" ':'')+'onclick="setView(\''+t[0]+'\')"><span class="bi">'+ic(t[3])+'</span><span>'+t[2]+'</span></button>').join('')+'</nav>';
   $('#app').innerHTML=h;
   // hash invite prefill
   if(location.hash.startsWith('#join=')){$('#joinCode')&&( $('#joinCode').value=location.hash.slice(6) )}
